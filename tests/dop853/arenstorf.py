@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from numba import njit
 
-from yen import DOP853Solver
+from yennefer import DOP853Solver
 
 
 # ==============================================================================

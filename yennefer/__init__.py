@@ -1,5 +1,5 @@
 """
-yen - Numerical integration library for Ordinary Differential Equations.
+yennefer - Numerical integration library for Ordinary Differential Equations.
 """
 
 from .rk4 import RK4Solver

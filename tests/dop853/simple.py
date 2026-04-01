@@ -1,7 +1,7 @@
 import numpy as np
 from numba import njit
 
-from yen import DOP853Solver
+from yennefer import DOP853Solver
 
 
 @njit

@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from numba import njit
-from yen import DOP853Solver
+from yennefer import DOP853Solver
 
 
 @njit

@@ -4,7 +4,7 @@ from scipy.integrate import solve_ivp
 from numba import njit
 import time
 
-from yen import DOP853Solver
+from yennefer import DOP853Solver
 
 
 @njit
