@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yen"
+version = "0.1.0"
+description = "Fast numerical ODE solvers (RK4, RK45, DOP853) optimized with Numba."
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
+]
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "numba"
+]
+
+[tool.setuptools.packages.find]
+include = ["yen*"]
