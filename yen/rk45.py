@@ -120,10 +120,17 @@ class RK45Solver:
             function: F,
             y0: NDArray[np.float64],
             params: NDArray[np.float64],
+            atol: float = 1e-6,
+            rtol: float = 1e-3,
+            max_step: float = np.inf,
     ) -> None:
         self._f = function
         self._y0 = np.asarray(y0, dtype=np.float64)
         self._params = np.asarray(params, dtype=np.float64)
+
+        self.rtol = rtol
+        self.atol = atol
+        self.max_step = max_step
 
         self._t: NDArray[np.float64] | None = None
         self._y: NDArray[np.float64] | None = None
@@ -132,9 +139,6 @@ class RK45Solver:
             self,
             t_max: float,
             dt_initial: float = 1e-3,
-            atol: float = 1e-6,
-            rtol: float = 1e-3,
-            max_step: float = np.inf,
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """Run the adaptive integration from ``t = 0`` to ``t_max``.
 
@@ -159,7 +163,7 @@ class RK45Solver:
             Solution at each time point.
         """
         self._t, self._y = _rkf45_integrate(
-            self._f, self._y0, dt_initial, t_max, self._params, atol, rtol, max_step
+            self._f, self._y0, dt_initial, t_max, self._params, self.atol, self.rtol, self.max_step
         )
         return self._t, self._y
 
