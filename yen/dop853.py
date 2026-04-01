@@ -1,178 +1,187 @@
+"""
+DOP853 — Dormand-Prince 8(5,3) explicit Runge-Kutta method.
+
+Source: Hairer E., Nørsett S.P., Wanner G.
+        "Solving Ordinary Differential Equations I", 2nd ed., Springer, 1993.
+
+Based on the DOP853 implementation by Ernst Hairer and Jacob Williams.
+Original Fortran source: https://github.com/jacobwilliams/dop853
+See LICENSE file for full license text.
+"""
+
 from __future__ import annotations
+
 from typing import Callable
+
 import numpy as np
 from numpy.typing import NDArray
 from numba import njit
-from .dop853_constants import N_STAGES, A, B, BHH, C, E3, E5
+
+from .dop853_constants import *
 
 F = Callable[[float, NDArray[np.float64], NDArray[np.float64]], NDArray[np.float64]]
-
-
-@njit
-def _dop853_step(
-        f: F,
-        t: float,
-        y: NDArray[np.float64],
-        dt: float,
-        params: NDArray[np.float64],
-) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
-    """Compute one DOP853 step.
-
-    Returns
-    -------
-    y_new : ndarray
-        8th-order solution at t + dt.
-    err5 : ndarray
-        Error estimate vector (difference: 8th-order minus embedded 5th-order).
-    err3 : ndarray
-        Secondary error estimate vector (3rd-order residual).
-    """
-    n_vars = y.shape[0]
-    K = np.empty((N_STAGES, n_vars), dtype=np.float64)
-
-    for i in range(N_STAGES):
-        dy = np.zeros(n_vars, dtype=np.float64)
-        for j in range(i):
-            if A[i, j] != 0.0:
-                dy += A[i, j] * K[j]
-        K[i] = f(t + C[i] * dt, y + dt * dy, params)
-
-    y_new = y.copy()
-    for i in range(N_STAGES):
-        if B[i] != 0.0:
-            y_new += dt * B[i] * K[i]
-
-    # ── Error estimation (Hairer/Wanner DOP853 formula) ──────────────────────
-    # Primary error:  err5 = h * sum(E5[i] * K[i])   where E5 = B - BHH
-    # Secondary error: err3 = h * sum(E3[i] * K[i])
-    #
-    # Combined norm per component j:
-    #   sk_j  = atol + rtol * max(|y_j|, |y_new_j|)
-    #   err_j = err5_j / (sk_j * stden_j)
-    # where  stden = h * sum(BHH[i] * K[i])  (the embedded 5th-order increment)
-    #
-    # error_norm = sqrt( mean(err_j^2) )
-    # with denom = err5_norm^2 + 0.01 * err3_norm^2 used as a safety denominator.
-    #
-    # NOTE: stden is returned separately so that _dop853_integrate can compute
-    # the combined norm without recomputing BHH@K.
-
-    err5 = np.zeros(n_vars, dtype=np.float64)
-    err3 = np.zeros(n_vars, dtype=np.float64)
-    stden = np.zeros(n_vars, dtype=np.float64)
-
-    for i in range(N_STAGES):
-        if E5[i] != 0.0:
-            err5 += E5[i] * K[i]
-        if E3[i] != 0.0:
-            err3 += E3[i] * K[i]
-        if BHH[i] != 0.0:
-            stden += BHH[i] * K[i]
-
-    err5 *= dt
-    err3 *= dt
-    stden *= dt
-
-    return y_new, err5, err3, stden
-
 
 @njit
 def _dop853_integrate(
         f: F,
         y0: NDArray[np.float64],
-        dt_initial: float,
+        dt_init: float,
         t_max: float,
         params: NDArray[np.float64],
-        atol: float,
         rtol: float,
-        max_step: float,
+        atol: float,
+        n_max_steps: int,
+        fac1: float = 0.333,
+        fac2: float = 6.0,
+        safe: float = 0.9,
+        beta: float = 0.0,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     n_vars = y0.shape[0]
 
-    capacity = 1000
-    t_arr = np.empty(capacity, dtype=np.float64)
-    y_arr = np.empty((capacity, n_vars), dtype=np.float64)
-
-    t_arr[0] = 0.0
-    y_arr[0] = y0
+    # Pre-allocate arrays
+    t_arr = np.empty(n_max_steps + 1, dtype=np.float64)
+    y_arr = np.empty((n_max_steps + 1, n_vars), dtype=np.float64)
 
     t = 0.0
-    y = y0.copy()
-    dt = dt_initial
-    step_idx = 1
+    y = np.copy(y0)
 
-    while t < t_max:
-        if t + dt > t_max:
-            dt = t_max - t
+    t_arr[0] = t
+    y_arr[0] = y
 
-        y_new, err5, err3, stden = _dop853_step(f, t, y, dt, params)
+    h = dt_init
+    idx = 1
+    nstep = 0
 
-        # ── Combined DOP853 error norm (Hairer eq. III.5.7) ──────────────────
-        # sk = atol + rtol * max(|y|, |y_new|)
-        # For each component j:
-        #   e5j = err5[j] / (sk[j] * |stden[j]|)  if stden[j] != 0
-        #         err5[j] / sk[j]                  otherwise
-        # err5_norm^2 = mean(e5j^2)
-        # err3_norm^2 = mean(e3j^2)   with e3j = err3[j] / (sk[j] * |stden[j]|)
-        # error_norm  = sqrt(err5_norm^2 / (err5_norm^2 + 0.01 * err3_norm^2))
-        sk = atol + np.maximum(np.abs(y), np.abs(y_new)) * rtol
+    k1 = f(t, y, params)
 
-        err5_norm_sq = 0.0
-        err3_norm_sq = 0.0
-        for j in range(n_vars):
-            denom_j = sk[j] * max(abs(stden[j]), 1e-300)
-            e5j = err5[j] / denom_j
-            e3j = err3[j] / denom_j
-            err5_norm_sq += e5j * e5j
-            err3_norm_sq += e3j * e3j
+    facold = 1.0e-4
+    expo1 = 1.0 / 8.0 - beta * 0.2
+    facc1 = 1.0 / fac1
+    facc2 = 1.0 / fac2
 
-        err5_norm_sq /= float(n_vars)
-        err3_norm_sq /= float(n_vars)
+    posneg = 1.0 if t_max > 0.0 else -1.0
+    reject = False
+    last = False
 
-        combined_denom = err5_norm_sq + 0.01 * err3_norm_sq
-        if combined_denom > 0.0:
-            error_norm = np.sqrt(err5_norm_sq / combined_denom)
+    while t < t_max and nstep < n_max_steps:
+
+        if np.abs(h) < np.abs(t) * np.finfo(np.float64).eps:
+            # Step size too small
+            break
+
+        if (t + 1.01 * h - t_max) * posneg > 0.0:
+            h = t_max - t
+            last = True
+
+        nstep += 1
+
+        # --- 12 Stages computation ---
+        y_tmp = y + h * A21 * k1
+        k2 = f(t + C2 * h, y_tmp, params)
+
+        y_tmp = y + h * (A31 * k1 + A32 * k2)
+        k3 = f(t + C3 * h, y_tmp, params)
+
+        y_tmp = y + h * (A41 * k1 + A43 * k3)
+        k4 = f(t + C4 * h, y_tmp, params)
+
+        y_tmp = y + h * (A51 * k1 + A53 * k3 + A54 * k4)
+        k5 = f(t + C5 * h, y_tmp, params)
+
+        y_tmp = y + h * (A61 * k1 + A64 * k4 + A65 * k5)
+        k6 = f(t + C6 * h, y_tmp, params)
+
+        y_tmp = y + h * (A71 * k1 + A74 * k4 + A75 * k5 + A76 * k6)
+        k7 = f(t + C7 * h, y_tmp, params)
+
+        y_tmp = y + h * (A81 * k1 + A84 * k4 + A85 * k5 + A86 * k6 + A87 * k7)
+        k8 = f(t + C8 * h, y_tmp, params)
+
+        y_tmp = y + h * (A91 * k1 + A94 * k4 + A95 * k5 + A96 * k6 + A97 * k7 + A98 * k8)
+        k9 = f(t + C9 * h, y_tmp, params)
+
+        y_tmp = y + h * (A101 * k1 + A104 * k4 + A105 * k5 + A106 * k6 + A107 * k7 + A108 * k8 + A109 * k9)
+        k10 = f(t + C10 * h, y_tmp, params)
+
+        y_tmp = y + h * (
+                    A111 * k1 + A114 * k4 + A115 * k5 + A116 * k6 + A117 * k7 + A118 * k8 + A119 * k9 + A1110 * k10)
+        k11 = f(t + C11 * h, y_tmp, params)
+
+        t_next = t + h
+        y_tmp = y + h * (
+                    A121 * k1 + A124 * k4 + A125 * k5 + A126 * k6 + A127 * k7 + A128 * k8 + A129 * k9 + A1210 * k10 + A1211 * k11)
+        k12 = f(t_next, y_tmp, params)
+
+        k_final = B1 * k1 + B6 * k6 + B7 * k7 + B8 * k8 + B9 * k9 + B10 * k10 + B11 * k11 + B12 * k12
+        y_next = y + h * k_final
+
+        # --- Error estimation ---
+        err = 0.0
+        err2 = 0.0
+
+        for i in range(n_vars):
+            sk = atol + rtol * max(abs(y[i]), abs(y_next[i]))
+            erri = k_final[i] - BHH1 * k1[i] - BHH2 * k9[i] - BHH3 * k12[i]
+            err2 += (erri / sk) ** 2
+
+            erri_2 = (ER1 * k1[i] + ER6 * k6[i] + ER7 * k7[i] + ER8 * k8[i] +
+                      ER9 * k9[i] + ER10 * k10[i] + ER11 * k11[i] + ER12 * k12[i])
+            err += (erri_2 / sk) ** 2
+
+        deno = err + 0.01 * err2
+        if deno <= 0.0:
+            deno = 1.0
+
+        err = abs(h) * err * np.sqrt(1.0 / (n_vars * deno))
+
+        # --- Computation of hnew ---
+        fac11 = err ** expo1
+        fac = fac11 / (facold ** beta)
+        fac = max(facc2, min(facc1, fac / safe))
+        h_new = h / fac
+
+        if err <= 1.0:
+            # Step is accepted
+            facold = max(err, 1.0e-4)
+            k_new_eval = f(t_next, y_next, params)  # New k1 mapping
+
+            k1 = k_new_eval
+            y = y_next
+            t = t_next
+
+            t_arr[idx] = t
+            y_arr[idx] = y
+            idx += 1
+
+            if last:
+                h = h_new
+                break
+
+            if reject:
+                h_new = posneg * min(abs(h_new), abs(h))
+
+            reject = False
         else:
-            error_norm = 0.0
+            # Step is rejected
+            h_new = h / min(facc1, fac11 / safe)
+            reject = True
+            last = False
 
-        if error_norm <= 1.0:
-            # Step accepted
-            t = t + dt
-            y = y_new
+        h = h_new
 
-            if step_idx >= capacity:
-                new_capacity = capacity * 2
-                new_t_arr = np.empty(new_capacity, dtype=np.float64)
-                new_y_arr = np.empty((new_capacity, n_vars), dtype=np.float64)
-                new_t_arr[:capacity] = t_arr
-                new_y_arr[:capacity] = y_arr
-                t_arr = new_t_arr
-                y_arr = new_y_arr
-                capacity = new_capacity
-
-            t_arr[step_idx] = t
-            y_arr[step_idx] = y
-            step_idx += 1
-
-        # Step-size control: PI controller exponent 1/8 for 8th-order method
-        if error_norm == 0.0:
-            factor = 10.0
-        else:
-            factor = min(10.0, max(0.2, 0.9 * (1.0 / error_norm) ** 0.125))
-
-        dt = min(dt * factor, max_step)
-
-    return t_arr[:step_idx], y_arr[:step_idx]
+    return t_arr[:idx], y_arr[:idx]
 
 
 class DOP853Solver:
-    """Explicit 8th-order Runge-Kutta solver (Dormand-Prince 8(5,3)).
+    """Adaptive-step Runge-Kutta 8th-order ODE solver (Dormand & Prince 8(5,3)).
 
     The right-hand side ``f`` must have the signature::
 
         f(t: float, y: NDArray[float64], params: NDArray[float64]) -> NDArray[float64]
 
-    Best used with strict tolerances (e.g., rtol < 1e-6, atol < 1e-8).
+    The core method ``_dop853_integrate`` is decorated with ``@njit``
+    and is compiled on the first call. For maximum performance, decorate
+    ``f`` with ``@njit`` as well before passing it to the solver.
     """
 
     def __init__(
@@ -180,35 +189,55 @@ class DOP853Solver:
             function: F,
             y0: NDArray[np.float64],
             params: NDArray[np.float64],
+            rtol: float = 1e-9,
+            atol: float = 1e-9,
+            n_max_steps: int = 100000,
     ) -> None:
         self._f = function
         self._y0 = np.asarray(y0, dtype=np.float64)
         self._params = np.asarray(params, dtype=np.float64)
 
+        self.rtol = rtol
+        self.atol = atol
+        self.n_max_steps = n_max_steps
+
         self._t: NDArray[np.float64] | None = None
         self._y: NDArray[np.float64] | None = None
 
-    def solve(
-            self,
-            t_max: float,
-            dt_initial: float = 1e-3,
-            atol: float = 1e-8,
-            rtol: float = 1e-6,
-            max_step: float = np.inf,
-    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    def solve(self, t_max: float, dt_init: float) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """Run the integration from ``t = 0`` to ``t_max``.
+
+        ``dt`` serves as the initial step size guess (`h_init`) for the adaptive algorithm.
+
+        Returns
+        -------
+        t : NDArray[float64], shape (N_accepted_steps,)
+            Time grid at accepted adaptive steps.
+        y : NDArray[float64], shape (N_accepted_steps, n_vars)
+            Solution at each accepted time point.
+        """
         self._t, self._y = _dop853_integrate(
-            self._f, self._y0, dt_initial, t_max, self._params, atol, rtol, max_step
+            self._f,
+            self._y0,
+            dt_init,
+            t_max,
+            self._params,
+            self.rtol,
+            self.atol,
+            self.n_max_steps
         )
         return self._t, self._y
 
     @property
     def t(self) -> NDArray[np.float64]:
+        """Time grid from the last ``solve()`` call."""
         if self._t is None:
             raise RuntimeError("Call solve() first.")
         return self._t
 
     @property
     def y(self) -> NDArray[np.float64]:
+        """Solution array from the last ``solve()`` call."""
         if self._y is None:
             raise RuntimeError("Call solve() first.")
         return self._y
