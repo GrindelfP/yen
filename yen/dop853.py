@@ -3,7 +3,7 @@ from typing import Callable
 import numpy as np
 from numpy.typing import NDArray
 from numba import njit
-from .dop853_constants import N_STAGES, A, B, C, E3, E5
+from .dop853_constants import N_STAGES, A, B, BHH, C, E3, E5
 
 F = Callable[[float, NDArray[np.float64], NDArray[np.float64]], NDArray[np.float64]]
 
@@ -15,9 +15,19 @@ def _dop853_step(
         y: NDArray[np.float64],
         dt: float,
         params: NDArray[np.float64],
-) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
-    n_vars = y.shape[0]
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """Compute one DOP853 step.
 
+    Returns
+    -------
+    y_new : ndarray
+        8th-order solution at t + dt.
+    err5 : ndarray
+        Error estimate vector (difference: 8th-order minus embedded 5th-order).
+    err3 : ndarray
+        Secondary error estimate vector (3rd-order residual).
+    """
+    n_vars = y.shape[0]
     K = np.empty((N_STAGES, n_vars), dtype=np.float64)
 
     for i in range(N_STAGES):
@@ -27,12 +37,43 @@ def _dop853_step(
                 dy += A[i, j] * K[j]
         K[i] = f(t + C[i] * dt, y + dt * dy, params)
 
-    y_new = y + dt * (B @ K)
+    y_new = y.copy()
+    for i in range(N_STAGES):
+        if B[i] != 0.0:
+            y_new += dt * B[i] * K[i]
 
-    err5 = dt * (E5 @ K)
-    err3 = dt * (E3 @ K)
+    # ── Error estimation (Hairer/Wanner DOP853 formula) ──────────────────────
+    # Primary error:  err5 = h * sum(E5[i] * K[i])   where E5 = B - BHH
+    # Secondary error: err3 = h * sum(E3[i] * K[i])
+    #
+    # Combined norm per component j:
+    #   sk_j  = atol + rtol * max(|y_j|, |y_new_j|)
+    #   err_j = err5_j / (sk_j * stden_j)
+    # where  stden = h * sum(BHH[i] * K[i])  (the embedded 5th-order increment)
+    #
+    # error_norm = sqrt( mean(err_j^2) )
+    # with denom = err5_norm^2 + 0.01 * err3_norm^2 used as a safety denominator.
+    #
+    # NOTE: stden is returned separately so that _dop853_integrate can compute
+    # the combined norm without recomputing BHH@K.
 
-    return y_new, err5, err3
+    err5 = np.zeros(n_vars, dtype=np.float64)
+    err3 = np.zeros(n_vars, dtype=np.float64)
+    stden = np.zeros(n_vars, dtype=np.float64)
+
+    for i in range(N_STAGES):
+        if E5[i] != 0.0:
+            err5 += E5[i] * K[i]
+        if E3[i] != 0.0:
+            err3 += E3[i] * K[i]
+        if BHH[i] != 0.0:
+            stden += BHH[i] * K[i]
+
+    err5 *= dt
+    err3 *= dt
+    stden *= dt
+
+    return y_new, err5, err3, stden
 
 
 @njit
@@ -56,7 +97,7 @@ def _dop853_integrate(
     y_arr[0] = y0
 
     t = 0.0
-    y = y0
+    y = y0.copy()
     dt = dt_initial
     step_idx = 1
 
@@ -64,23 +105,38 @@ def _dop853_integrate(
         if t + dt > t_max:
             dt = t_max - t
 
-        y_new, err5, err3 = _dop853_step(f, t, y, dt, params)
+        y_new, err5, err3, stden = _dop853_step(f, t, y, dt, params)
 
-        scale = atol + np.maximum(np.abs(y), np.abs(y_new)) * rtol
-        err5_scaled = err5 / scale
-        err3_scaled = err3 / scale
+        # ── Combined DOP853 error norm (Hairer eq. III.5.7) ──────────────────
+        # sk = atol + rtol * max(|y|, |y_new|)
+        # For each component j:
+        #   e5j = err5[j] / (sk[j] * |stden[j]|)  if stden[j] != 0
+        #         err5[j] / sk[j]                  otherwise
+        # err5_norm^2 = mean(e5j^2)
+        # err3_norm^2 = mean(e3j^2)   with e3j = err3[j] / (sk[j] * |stden[j]|)
+        # error_norm  = sqrt(err5_norm^2 / (err5_norm^2 + 0.01 * err3_norm^2))
+        sk = atol + np.maximum(np.abs(y), np.abs(y_new)) * rtol
 
-        err5_norm_2 = np.sum(err5_scaled ** 2)
-        err3_norm_2 = np.sum(err3_scaled ** 2)
-        denom = err5_norm_2 + 0.01 * err3_norm_2
+        err5_norm_sq = 0.0
+        err3_norm_sq = 0.0
+        for j in range(n_vars):
+            denom_j = sk[j] * max(abs(stden[j]), 1e-300)
+            e5j = err5[j] / denom_j
+            e3j = err3[j] / denom_j
+            err5_norm_sq += e5j * e5j
+            err3_norm_sq += e3j * e3j
 
-        if denom > 0:
-            error_norm = (err5_norm_2 / np.sqrt(denom)) / np.sqrt(float(n_vars))
+        err5_norm_sq /= float(n_vars)
+        err3_norm_sq /= float(n_vars)
+
+        combined_denom = err5_norm_sq + 0.01 * err3_norm_sq
+        if combined_denom > 0.0:
+            error_norm = np.sqrt(err5_norm_sq / combined_denom)
         else:
             error_norm = 0.0
 
         if error_norm <= 1.0:
-            # Шаг успешен
+            # Step accepted
             t = t + dt
             y = y_new
 
@@ -98,16 +154,13 @@ def _dop853_integrate(
             y_arr[step_idx] = y
             step_idx += 1
 
+        # Step-size control: PI controller exponent 1/8 for 8th-order method
         if error_norm == 0.0:
             factor = 10.0
         else:
-            factor = 0.9 * (1.0 / error_norm) ** 0.125
+            factor = min(10.0, max(0.2, 0.9 * (1.0 / error_norm) ** 0.125))
 
-        factor = min(10.0, max(0.2, factor))
-        dt = dt * factor
-
-        if dt > max_step:
-            dt = max_step
+        dt = min(dt * factor, max_step)
 
     return t_arr[:step_idx], y_arr[:step_idx]
 
@@ -116,6 +169,7 @@ class DOP853Solver:
     """Explicit 8th-order Runge-Kutta solver (Dormand-Prince 8(5,3)).
 
     The right-hand side ``f`` must have the signature::
+
         f(t: float, y: NDArray[float64], params: NDArray[float64]) -> NDArray[float64]
 
     Best used with strict tolerances (e.g., rtol < 1e-6, atol < 1e-8).
