@@ -1,5 +1,0 @@
-= YENNEFER ODE SOLVER  =
-
-== Description ==
-
-This is an ordinary differential equations systems solver library named Yen (after Yennefer of Vengerberg). Fast numerical ODE solvers (RK4, RK45, DOP853) optimized with Numba.
