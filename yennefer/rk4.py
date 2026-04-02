@@ -33,20 +33,29 @@ def _rk4_integrate(
     t_max: float,
     params: NDArray[np.float64],
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    n_steps = int(t_max / dt) + 1
+    n_steps = int(t_max / dt) + 2
     n_vars  = y0.shape[0]
-
     t_arr = np.empty(n_steps, dtype=np.float64)
     y_arr = np.empty((n_steps, n_vars), dtype=np.float64)
+    t_arr[0] = 0.0
+    y_arr[0] = y0
 
-    t_arr[0]  = 0.0
-    y_arr[0]  = y0
+    idx = 1
+    t   = 0.0
+    y   = y0
 
-    for i in range(1, n_steps):
-        t_arr[i] = t_arr[i - 1] + dt
-        y_arr[i] = _rk4_step(f, t_arr[i - 1], y_arr[i - 1], dt, params)
+    while t < t_max:
+        h = dt
+        if t + h > t_max:                    # last step
+            h = t_max - t
+        y = _rk4_step(f, t, y, h, params)
+        t = t + h
 
-    return t_arr, y_arr
+        t_arr[idx] = t
+        y_arr[idx] = y
+        idx += 1
+
+    return t_arr[:idx], y_arr[:idx]
 
 
 class RK4Solver:
