@@ -1,4 +1,4 @@
-= YEN =
+= YENNEFER ODE SOLVER  =
 
 == Description ==
 
