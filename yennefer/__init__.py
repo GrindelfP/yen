@@ -11,3 +11,5 @@ __all__ = [
     "RK45Solver",
     "DOP853Solver",
 ]
+
+__version__ = "0.2.2"
