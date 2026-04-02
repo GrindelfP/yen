@@ -38,9 +38,14 @@ def _dop853_integrate(
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     n_vars = y0.shape[0]
 
+    # # Pre-allocate arrays
+    # t_arr = np.empty(n_max_steps + 1, dtype=np.float64)
+    # y_arr = np.empty((n_max_steps + 1, n_vars), dtype=np.float64)
+
     # Pre-allocate arrays
-    t_arr = np.empty(n_max_steps + 1, dtype=np.float64)
-    y_arr = np.empty((n_max_steps + 1, n_vars), dtype=np.float64)
+    capacity = 1000
+    t_arr = np.empty(capacity, dtype=np.float64)
+    y_arr = np.empty((capacity, n_vars), dtype=np.float64)
 
     t = 0.0
     y = np.copy(y0)
@@ -141,6 +146,22 @@ def _dop853_integrate(
         h_new = h / fac
 
         if err <= 1.0:
+
+            # --- ALLOCATION ---
+            if idx >= capacity:
+                new_capacity = capacity * 2
+
+                new_t_arr = np.empty(new_capacity, dtype=np.float64)
+                new_t_arr[:capacity] = t_arr
+                t_arr = new_t_arr
+
+                new_y_arr = np.empty((new_capacity, n_vars), dtype=np.float64)
+                new_y_arr[:capacity, :] = y_arr
+                y_arr = new_y_arr
+
+                capacity = new_capacity
+            # -------------------------------------
+
             # Step is accepted
             facold = max(err, 1.0e-4)
             k_new_eval = f(t_next, y_next, params)  # New k1 mapping
@@ -224,7 +245,7 @@ class DOP853Solver:
             self._params,
             self.rtol,
             self.atol,
-            self.n_max_steps
+            int(self.n_max_steps)
         )
         return self._t, self._y
 
