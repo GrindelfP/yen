@@ -133,11 +133,18 @@ def _dop853_integrate(
                       ER9 * k9[i] + ER10 * k10[i] + ER11 * k11[i] + ER12 * k12[i])
             err += (erri_2 / sk) ** 2
 
+        # deno = err + 0.01 * err2
+        # if deno <= 0.0:
+        #     deno = 1.0
+        #
+        # err = abs(h) * err * np.sqrt(1.0 / (n_vars * deno))
+
+        err = np.sqrt(err / n_vars)
+        err2 = np.sqrt(err2 / n_vars)
         deno = err + 0.01 * err2
         if deno <= 0.0:
             deno = 1.0
-
-        err = abs(h) * err * np.sqrt(1.0 / (n_vars * deno))
+        err = err / deno
 
         # --- Computation of hnew ---
         fac11 = err ** expo1

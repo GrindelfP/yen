@@ -68,7 +68,8 @@ def _rkf45_integrate(
 
         y_new, y_err = _rkf45_step(f, t, y, dt, params)
 
-        scale = atol + np.maximum(np.abs(y), np.abs(y_new)) * rtol
+        # scale = atol + np.maximum(np.abs(y), np.abs(y_new)) * rtol
+        scale = atol + np.abs(y) * rtol
         error_norm = np.max(np.abs(y_err) / scale)
 
         if error_norm <= 1.0:
