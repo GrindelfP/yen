@@ -38,7 +38,7 @@ def run_energy_test():
 
     # Решаем с твоими лучшими настройками
     solver = DOP853Solver(arenstorf, y0, np.array([]), atol=1e-14, rtol=1e-14)
-    t_arr, y_arr = solver.solve(t_max=t_period, dt_init=1e-4)
+    t_arr, y_arr = solver.solve(t_max=t_period, dt_initial=1e-4)
 
     # Считаем значения интеграла
     c_values = np.array([calculate_jacobi(row) for row in y_arr])

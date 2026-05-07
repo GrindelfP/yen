@@ -83,7 +83,7 @@ T, Y = solver.solve(300.0, dt_initial=5e-2)
 
 ```python
 solver = DOP853Solver(jj_system, y0, params)
-T, Y = solver.solve(300.0, dt_init=5e-2)
+T, Y = solver.solve(300.0, dt_initial=5e-2)
 ```
 
 #### Plot

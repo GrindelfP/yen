@@ -35,7 +35,7 @@ def run_head_to_head_comparison():
 
     start_time = time.time()
     your_solver = DOP853Solver(arenstorf, y0, np.array([]), atol=atol, rtol=rtol)
-    t_your, y_your = your_solver.solve(t_max=t_period, dt_init=1e-4)
+    t_your, y_your = your_solver.solve(t_max=t_period, dt_initial=1e-4)
     your_duration = time.time() - start_time
 
     start_time = time.time()

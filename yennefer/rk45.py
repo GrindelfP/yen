@@ -123,7 +123,7 @@ class RK45Solver:
             params: NDArray[np.float64],
             atol: float = 1e-6,
             rtol: float = 1e-3,
-            max_step: float = np.inf,
+            n_max_steps: float = np.inf,
     ) -> None:
         self._f = function
         self._y0 = np.asarray(y0, dtype=np.float64)
@@ -131,7 +131,7 @@ class RK45Solver:
 
         self.rtol = rtol
         self.atol = atol
-        self.max_step = max_step
+        self.max_step = n_max_steps
 
         self._t: NDArray[np.float64] | None = None
         self._y: NDArray[np.float64] | None = None

@@ -234,7 +234,7 @@ class DOP853Solver:
         self._t: NDArray[np.float64] | None = None
         self._y: NDArray[np.float64] | None = None
 
-    def solve(self, t_max: float, dt_init: float) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    def solve(self, t_max: float, dt_initial: float) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """Run the integration from ``t = 0`` to ``t_max``.
 
         ``dt`` serves as the initial step size guess (`h_init`) for the adaptive algorithm.
@@ -249,7 +249,7 @@ class DOP853Solver:
         self._t, self._y = _dop853_integrate(
             self._f,
             self._y0,
-            dt_init,
+            dt_initial,
             t_max,
             self._params,
             self.rtol,

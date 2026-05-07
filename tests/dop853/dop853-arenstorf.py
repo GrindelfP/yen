@@ -47,7 +47,7 @@ def run_simulation_and_get_data():
         n_max_steps=100000
     )
 
-    t_arr, y_arr = solver.solve(t_max=t_period, dt_init=1e-4)
+    t_arr, y_arr = solver.solve(t_max=t_period, dt_initial=1e-4)
 
     final_y = y_arr[-1]
     error = np.linalg.norm(final_y - y0)
