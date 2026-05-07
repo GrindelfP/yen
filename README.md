@@ -101,7 +101,9 @@ plt.tight_layout()
 plt.show()
 ```
 
-More precise example is presenter in [example usage IPython notebook](https://github.com/GrindelfP/yen/blob/main/example_usage.ipynb).
+More precise example is presented in [example usage IPython notebook](https://github.com/GrindelfP/yen/blob/main/example_josephon_junction.ipynb).
+
+Another example is [here](https://github.com/GrindelfP/yen/blob/main/example_noised_oscillator.ipynb).
 
 ___
 

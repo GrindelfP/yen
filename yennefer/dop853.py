@@ -121,30 +121,32 @@ def _dop853_integrate(
         y_next = y + h * k_final
 
         # --- Error estimation ---
-        err = 0.0
-        err2 = 0.0
+        err = 0.0  # 8th order error sum of squares
+        err2 = 0.0  # 3rd order error sum of squares (for stabilization)
 
         for i in range(n_vars):
             sk = atol + rtol * max(abs(y[i]), abs(y_next[i]))
-            erri = k_final[i] - BHH1 * k1[i] - BHH2 * k9[i] - BHH3 * k12[i]
-            err2 += (erri / sk) ** 2
 
-            erri_2 = (ER1 * k1[i] + ER6 * k6[i] + ER7 * k7[i] + ER8 * k8[i] +
+            # Lower order estimate (stabilization)
+            erri_3 = k_final[i] - BHH1 * k1[i] - BHH2 * k9[i] - BHH3 * k12[i]
+            err2 += (erri_3 / sk) ** 2
+
+            # 8th order estimate
+            erri_8 = (ER1 * k1[i] + ER6 * k6[i] + ER7 * k7[i] + ER8 * k8[i] +
                       ER9 * k9[i] + ER10 * k10[i] + ER11 * k11[i] + ER12 * k12[i])
-            err += (erri_2 / sk) ** 2
+            err += (erri_8 / sk) ** 2
 
-        # deno = err + 0.01 * err2
-        # if deno <= 0.0:
-        #     deno = 1.0
-        #
-        # err = abs(h) * err * np.sqrt(1.0 / (n_vars * deno))
+        # 1. Scale by h^2 to make it an error in 'y' space
+        err *= h ** 2
+        err2 *= h ** 2
 
-        err = np.sqrt(err / n_vars)
-        err2 = np.sqrt(err2 / n_vars)
-        deno = err + 0.01 * err2
+        # 2. Apply Hairer's dampening formula:
+        # err_final = err_8th / sqrt(n * (err_8th + 0.01 * err_low))
+        deno = n_vars * (err + 0.01 * err2)
         if deno <= 0.0:
-            deno = 1.0
-        err = err / deno
+            err = 0.0
+        else:
+            err = err / np.sqrt(deno)
 
         # --- Computation of hnew ---
         fac11 = err ** expo1
@@ -219,15 +221,15 @@ class DOP853Solver:
             params: NDArray[np.float64],
             rtol: float = 1e-9,
             atol: float = 1e-9,
-            n_max_steps: int = np.inf,
+            n_max_steps: int = 10000,
     ) -> None:
         self._f = function
-        self._y0 = np.asarray(y0, dtype=np.float64)
-        self._params = np.asarray(params, dtype=np.float64)
+        self._y0: NDArray[np.float64] = np.asarray(y0, dtype=np.float64)
+        self._params: NDArray[np.float64] = np.asarray(params, dtype=np.float64)
 
         self.rtol = rtol
         self.atol = atol
-        self.n_max_steps = n_max_steps
+        self.n_max_steps = int(n_max_steps)
 
         self._t: NDArray[np.float64] | None = None
         self._y: NDArray[np.float64] | None = None
@@ -252,7 +254,7 @@ class DOP853Solver:
             self._params,
             self.rtol,
             self.atol,
-            int(self.n_max_steps)
+            self.n_max_steps
         )
         return self._t, self._y
 
