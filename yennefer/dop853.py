@@ -219,7 +219,7 @@ class DOP853Solver:
             params: NDArray[np.float64],
             rtol: float = 1e-9,
             atol: float = 1e-9,
-            n_max_steps: int = 10000,
+            n_max_steps: int = np.inf,
     ) -> None:
         self._f = function
         self._y0 = np.asarray(y0, dtype=np.float64)
@@ -252,7 +252,7 @@ class DOP853Solver:
             self._params,
             self.rtol,
             self.atol,
-            self.n_max_steps
+            int(self.n_max_steps)
         )
         return self._t, self._y
 
