@@ -90,9 +90,9 @@ def _radau_step(
 ) -> tuple[
     bool,                        # converged
     NDArray[np.float64],         # y_next
-    NDArray[np.float64],         # Z1, Z2, Z3 — collocation increments Z_i = y(t+C_i*h) - y
-    NDArray[np.float64],
-    NDArray[np.float64],
+    NDArray[np.float64],         # Z1
+    NDArray[np.float64],         # Z2
+    NDArray[np.float64],         # Z3
     float,                       # newton_rate
 ]:
 
@@ -153,35 +153,31 @@ def _radau_integrate(
     f: F,
     y0: NDArray[np.float64],
     dt_init: float,
-    t_max: float,
+    t_eval: NDArray[np.float64],
     params: NDArray[np.float64],
     rtol: float,
     atol: float,
     n_max_steps: int,
     max_jac_reuse: int = 20,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-
+    """Integration loop with dense output support."""
     n_vars = y0.shape[0]
+    n_out  = t_eval.shape[0]
+    y_out  = np.empty((n_out, n_vars), dtype=np.float64)
 
-    capacity = 1000
-    t_arr = np.empty(capacity, dtype=np.float64)
-    y_arr = np.empty((capacity, n_vars), dtype=np.float64)
-
-    t = 0.0
+    t = t_eval[0]
     y = y0.copy()
-    t_arr[0] = t
-    y_arr[0] = y
+    y_out[0] = y
 
     h       = dt_init
     h_abs   = abs(h)
-    idx     = 1
     nstep   = 0
+    t_idx   = 1  # Next t_eval point to fill
+    t_end   = t_eval[-1]
 
     h_min = np.finfo(np.float64).eps * 100
-
     newton_tol = max(10.0 * np.finfo(np.float64).eps / rtol, min(0.03, rtol ** 0.5))
 
-    # Начальный якобиан
     f_now = f(t, y, params)
     dfdy  = _estimate_jacobian(f, t, y, params, f_now)
     jac_age = 0
@@ -190,43 +186,32 @@ def _radau_integrate(
     h_abs_old      = None
     error_norm_old = None
 
-    while t < t_max and nstep < n_max_steps:
+    # Pre-calculate denominators for Lagrange interpolation
+    d1 = C1 * (C1 - C2) * (C1 - C3)
+    d2 = C2 * (C2 - C1) * (C2 - C3)
+    d3 = C3 * (C3 - C1) * (C3 - C2)
 
+    while t_idx < n_out and nstep < n_max_steps:
         if h_abs < h_min:
-            warnings.warn(
-                f"Step ({h_abs:.2e}) fell smaller than minimal: ({h_min:.2e}). "
-                "Integrating stopped.",
-                RuntimeWarning, stacklevel=2,
-            )
+            warnings.warn(f"Step ({h_abs:.2e}) fell smaller than minimal.", RuntimeWarning)
             break
 
-        if t + h_abs > t_max:
-            h_abs = t_max - t
+        if t + h_abs > t_end:
+            h_abs = t_end - t
 
         h = h_abs
-
         converged, y_next, Z1, Z2, Z3, newton_rate = _radau_step(
             f, t, y, h, params, dfdy, k1_prev, newton_tol
         )
 
         if not converged:
-            f_now = f(t, y, params)
-            dfdy  = _estimate_jacobian(f, t, y, params, f_now)
-            jac_age = 0
-
+            f_now = f(t, y, params); dfdy = _estimate_jacobian(f, t, y, params, f_now); jac_age = 0
             h_abs *= 0.5
-            if h_abs < h_min:
-                warnings.warn(
-                    "Did not converge!",
-                    RuntimeWarning, stacklevel=2,
-                )
-                break
             continue
 
-        f0      = f(t, y, params)
+        f0 = f(t, y, params)
         err_vec = h * f0 + E1*Z1 + E2*Z2 + E3*Z3
-        scale   = atol + rtol * np.maximum(np.abs(y), np.abs(y_next))
-
+        scale = atol + rtol * np.maximum(np.abs(y), np.abs(y_next))
         error_norm = _error_norm(err_vec, scale)
 
         if error_norm_old is None or h_abs_old is None or error_norm == 0.0:
@@ -235,47 +220,97 @@ def _radau_integrate(
             multiplier = h_abs / h_abs_old * (error_norm_old / error_norm) ** 0.25
             factor = min(1.0, multiplier) * error_norm ** (-STEP_EXPO)
 
-        factor  = STEP_SAFE * min(STEP_MAX_FAC, max(STEP_MIN_FAC, factor))
-        h_new   = h_abs * factor
+        factor = STEP_SAFE * min(STEP_MAX_FAC, max(STEP_MIN_FAC, factor))
+        h_new = h_abs * factor
 
         if error_norm <= 1.0:
             nstep += 1
+            t_next = t + h
 
-            error_norm_old = error_norm
-            h_abs_old      = h_abs
-            h_abs          = h_new
+            # Perform interpolation for any points in t_eval caught by this step
+            while t_idx < n_out and t_eval[t_idx] <= t_next:
+                s = (t_eval[t_idx] - t) / h
+                l1 = (s * (s - C2) * (s - C3)) / d1
+                l2 = (s * (s - C1) * (s - C3)) / d2
+                l3 = (s * (s - C1) * (s - C2)) / d3
+                y_out[t_idx] = y + l1 * Z1 + l2 * Z2 + l3 * Z3
+                t_idx += 1
 
-            jac_age += 1
+            error_norm_old = error_norm; h_abs_old = h_abs; h_abs = h_new; jac_age += 1
             if jac_age >= max_jac_reuse or newton_rate > JAC_REUSE_RATE:
-                f_now   = f(t + h, y_next, params)
-                dfdy    = _estimate_jacobian(f, t + h, y_next, params, f_now)
-                jac_age = 0
-                k1_prev = f_now
+                f_now = f(t_next, y_next, params); dfdy = _estimate_jacobian(f, t_next, y_next, params, f_now)
+                jac_age = 0; k1_prev = f_now
             else:
-                f_next  = f(t + h, y_next, params)
-                k1_prev = f_next
-
-            t = t + h
-            y = y_next
-
-            if idx >= capacity:
-                new_cap = capacity * 2
-                new_t   = np.empty(new_cap, dtype=np.float64)
-                new_y   = np.empty((new_cap, n_vars), dtype=np.float64)
-                new_t[:capacity]    = t_arr
-                new_y[:capacity, :] = y_arr
-                t_arr    = new_t
-                y_arr    = new_y
-                capacity = new_cap
-
-            t_arr[idx] = t
-            y_arr[idx] = y
-            idx += 1
-
+                k1_prev = f(t_next, y_next, params)
+            t = t_next; y = y_next
         else:
-            h_abs = h_new
-            error_norm_old = None
-            h_abs_old      = None
+            h_abs = h_new; error_norm_old = None; h_abs_old = None
+
+    return t_eval[:t_idx], y_out[:t_idx]
+
+
+def _radau_integrate_adaptive(
+    f: F,
+    y0: NDArray[np.float64],
+    dt_init: float,
+    t_max: float,
+    params: NDArray[np.float64],
+    rtol: float,
+    atol: float,
+    n_max_steps: int,
+    max_jac_reuse: int = 20,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Legacy adaptive-step integration loop."""
+    n_vars = y0.shape[0]
+    capacity = 1000
+    t_arr = np.empty(capacity, dtype=np.float64)
+    y_arr = np.empty((capacity, n_vars), dtype=np.float64)
+
+    t = 0.0; y = y0.copy(); t_arr[0] = t; y_arr[0] = y
+    h = dt_init; h_abs = abs(h); idx = 1; nstep = 0
+    h_min = np.finfo(np.float64).eps * 100
+    newton_tol = max(10.0 * np.finfo(np.float64).eps / rtol, min(0.03, rtol ** 0.5))
+
+    f_now = f(t, y, params); dfdy = _estimate_jacobian(f, t, y, params, f_now); jac_age = 0; k1_prev = f_now
+    h_abs_old = None; error_norm_old = None
+
+    while t < t_max and nstep < n_max_steps:
+        if h_abs < h_min: break
+        if t + h_abs > t_max: h_abs = t_max - t
+        h = h_abs
+        converged, y_next, Z1, Z2, Z3, newton_rate = _radau_step(f, t, y, h, params, dfdy, k1_prev, newton_tol)
+
+        if not converged:
+            f_now = f(t, y, params); dfdy = _estimate_jacobian(f, t, y, params, f_now); jac_age = 0
+            h_abs *= 0.5; continue
+
+        f0 = f(t, y, params); err_vec = h * f0 + E1*Z1 + E2*Z2 + E3*Z3
+        scale = atol + rtol * np.maximum(np.abs(y), np.abs(y_next))
+        error_norm = _error_norm(err_vec, scale)
+
+        if error_norm_old is None or h_abs_old is None or error_norm == 0.0:
+            factor = error_norm ** (-STEP_EXPO)
+        else:
+            multiplier = h_abs / h_abs_old * (error_norm_old / error_norm) ** 0.25
+            factor = min(1.0, multiplier) * error_norm ** (-STEP_EXPO)
+
+        factor = STEP_SAFE * min(STEP_MAX_FAC, max(STEP_MIN_FAC, factor))
+        h_new = h_abs * factor
+
+        if error_norm <= 1.0:
+            nstep += 1; error_norm_old = error_norm; h_abs_old = h_abs; h_abs = h_new; jac_age += 1
+            if jac_age >= max_jac_reuse or newton_rate > JAC_REUSE_RATE:
+                f_now = f(t + h, y_next, params); dfdy = _estimate_jacobian(f, t + h, y_next, params, f_now)
+                jac_age = 0; k1_prev = f_now
+            else:
+                k1_prev = f(t + h, y_next, params)
+            t = t + h; y = y_next
+            if idx >= capacity:
+                new_cap = capacity * 2; new_t = np.empty(new_cap); new_y = np.empty((new_cap, n_vars))
+                new_t[:capacity] = t_arr; new_y[:capacity] = y_arr; t_arr = new_t; y_arr = new_y; capacity = new_cap
+            t_arr[idx] = t; y_arr[idx] = y; idx += 1
+        else:
+            h_abs = h_new; error_norm_old = None; h_abs_old = None
 
     return t_arr[:idx], y_arr[:idx]
 
@@ -305,20 +340,35 @@ class RADAUSolver:
 
     def solve(
         self,
-        t_max: float,
-        dt_init: float,
+        t_max: float | None = None,
+        dt_init: float | None = None,
+        t_min: float = 0.0,
+        t_eval: NDArray[np.float64] | None = None,
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-        self._t, self._y = _radau_integrate(
-            self._f,
-            self._y0,
-            dt_init,
-            float(t_max),
-            self._params,
-            self.rtol,
-            self.atol,
-            self.n_max_steps,
-            self.max_jac_reuse,
-        )
+        """Integrate from ``t_min`` to ``t_max`` or on ``t_eval`` grid."""
+
+        if t_eval is not None:
+            # Dense-output mode
+            t_eval = np.asarray(t_eval, dtype=np.float64)
+            if dt_init is None:
+                dt_init = 1e-3
+            self._t, self._y = _radau_integrate(
+                self._f, self._y0, dt_init, t_eval, self._params,
+                self.rtol, self.atol, self.n_max_steps, self.max_jac_reuse,
+            )
+        elif t_max is not None and dt_init is not None:
+            # Legacy adaptive-grid mode
+            self._t, self._y = _radau_integrate_adaptive(
+                self._f, self._y0, dt_init, float(t_max), self._params,
+                self.rtol, self.atol, self.n_max_steps, self.max_jac_reuse,
+            )
+        else:
+            raise ValueError(
+                "Provide either:\n"
+                "  solver.solve(t_max, dt_init)                # adaptive-grid mode\n"
+                "  solver.solve(t_eval=..., dt_init=...)       # dense-output mode"
+            )
+
         return self._t, self._y
 
     @property
