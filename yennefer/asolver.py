@@ -4,10 +4,11 @@ from typing import Callable
 
 from .dop853 import DOP853Solver
 from .radau import RADAUSolver, _estimate_jacobian
+from .utils import deprecated
 
 F = Callable[[float, NDArray[np.float64], NDArray[np.float64]], NDArray[np.float64]]
 
-
+@deprecated("Use explicit solver's class names instead!")
 class ASolver:
     """
     Automatic ODE Solver for the Yennefer library.
@@ -16,6 +17,7 @@ class ASolver:
     Routes to RADAUSolver if the system is stiff, and DOP853Solver if it is non-stiff.
     """
 
+    @deprecated("Use explicit solver's class names instead!")
     def __init__(
             self,
             function: F,
@@ -39,6 +41,7 @@ class ASolver:
 
         self._solver = None
 
+    @deprecated("Use explicit solver's class names instead!")
     def _detect_stiffness(self, t_init: float, t_max: float) -> tuple[bool, float]:
         """
         Estimates the 'Work Index' of the problem.
@@ -57,6 +60,7 @@ class ASolver:
         is_stiff = stiffness_index > self.stiffness_threshold
         return is_stiff, stiffness_index
 
+    @deprecated("Use explicit solver's class names instead!")
     def solve(self, t_max: float, dt_init: float, t_init: float = 0.0) -> tuple[
         NDArray[np.float64], NDArray[np.float64]]:
         """
@@ -93,12 +97,14 @@ class ASolver:
 
         return self._solver.solve(t_max, dt_init)
 
+    @deprecated("Use explicit solver's class names instead!")
     @property
     def t(self) -> NDArray[np.float64]:
         if self._solver is None:
             raise RuntimeError("Call solve() first.")
         return self._solver.t
 
+    @deprecated("Use explicit solver's class names instead!")
     @property
     def y(self) -> NDArray[np.float64]:
         if self._solver is None:
