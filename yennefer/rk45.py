@@ -10,6 +10,19 @@ F = Callable[[float, NDArray[np.float64], NDArray[np.float64]], NDArray[np.float
 
 
 @njit
+def _hermite_interp(t0, y0, f0, t1, y1, f1, t_target):
+    h = t1 - t0
+    theta = (t_target - t0) / h
+    return (
+        (1 - theta) * y0 + theta * y1 +
+        theta * (theta - 1) * (
+            (1 - 2*theta) * (y1 - y0) +
+            h * (theta - 1) * f0 +
+            h * theta * f1
+        )
+    )
+
+@njit
 def _rkf45_step(
         f: F,
         t: float,
@@ -39,56 +52,52 @@ def _rkf45_step(
 
 @njit
 def _rkf45_integrate(
-        f: F,
-        y0: NDArray[np.float64],
-        dt_initial: float,
-        t_max: float,
-        params: NDArray[np.float64],
-        atol: float,
-        rtol: float,
-        max_step: float,
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        f,
+        y0,
+        dt_initial,
+        t_eval,
+        params,
+        atol,
+        rtol,
+        max_step,
+):
     n_vars = y0.shape[0]
+    n_out  = t_eval.shape[0]
 
-    capacity = 1000
-    t_arr = np.empty(capacity, dtype=np.float64)
-    y_arr = np.empty((capacity, n_vars), dtype=np.float64)
+    y_out = np.empty((n_out, n_vars), dtype=np.float64)
+    y_out[0] = y0
 
-    t_arr[0] = 0.0
-    y_arr[0] = y0
-
-    t = 0.0
-    y = y0
+    t = t_eval[0]
+    y = y0.copy()
     dt = dt_initial
-    step_idx = 1
+    t_max = t_eval[-1]
 
-    while t < t_max:
+    f_cur = f(t, y, params)
+
+    eval_idx = 1
+
+    while eval_idx < n_out and t < t_max:
         if t + dt > t_max:
             dt = t_max - t
 
         y_new, y_err = _rkf45_step(f, t, y, dt, params)
 
-        # scale = atol + np.maximum(np.abs(y), np.abs(y_new)) * rtol
         scale = atol + np.abs(y) * rtol
         error_norm = np.max(np.abs(y_err) / scale)
 
         if error_norm <= 1.0:
-            t = t + dt
+            t_new = t + dt
+            f_new = f(t_new, y_new, params)
+
+            while eval_idx < n_out and t_eval[eval_idx] <= t_new:
+                y_out[eval_idx] = _hermite_interp(
+                    t, y, f_cur, t_new, y_new, f_new, t_eval[eval_idx]
+                )
+                eval_idx += 1
+
+            t = t_new
             y = y_new
-
-            if step_idx >= capacity:
-                new_capacity = capacity * 2
-                new_t_arr = np.empty(new_capacity, dtype=np.float64)
-                new_y_arr = np.empty((new_capacity, n_vars), dtype=np.float64)
-                new_t_arr[:capacity] = t_arr
-                new_y_arr[:capacity] = y_arr
-                t_arr = new_t_arr
-                y_arr = new_y_arr
-                capacity = new_capacity
-
-            t_arr[step_idx] = t
-            y_arr[step_idx] = y
-            step_idx += 1
+            f_cur = f_new
 
         if error_norm == 0.0:
             factor = 5.0
@@ -97,11 +106,10 @@ def _rkf45_integrate(
 
         factor = min(5.0, max(0.1, factor))
         dt = dt * factor
-
         if dt > max_step:
             dt = max_step
 
-    return t_arr[:step_idx], y_arr[:step_idx]
+    return t_eval, y_out
 
 
 class RK45Solver:
@@ -138,33 +146,21 @@ class RK45Solver:
 
     def solve(
             self,
-            t_max: float,
+            t_max: float | None = None,
             dt_initial: float = 1e-3,
+            t_min: float = 0.0,
+            t_eval: NDArray[np.float64] | None = None,
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-        """Run the adaptive integration from ``t = 0`` to ``t_max``.
+        if t_eval is None and t_max is not None:
+            n_steps = round((t_max - t_min) / dt_initial)
+            t_eval = np.linspace(t_min, t_max, n_steps + 1)
+        elif t_eval is None:
+            raise ValueError("Either provide t_max or t_eval!")
+        t_eval = np.asarray(t_eval, dtype=np.float64)
 
-        Parameters
-        ----------
-        t_max : float
-            Maximum integration time.
-        dt_initial : float, optional
-            Initial step size guess, by default 1e-3.
-        atol : float, optional
-            Absolute tolerance for error control, by default 1e-6.
-        rtol : float, optional
-            Relative tolerance for error control, by default 1e-3.
-        max_step : float, optional
-            Maximum allowed step size, by default infinity.
-
-        Returns
-        -------
-        t : NDArray[float64], shape (N,)
-            Time grid (adaptively determined).
-        y : NDArray[float64], shape (N, n_vars)
-            Solution at each time point.
-        """
         self._t, self._y = _rkf45_integrate(
-            self._f, self._y0, dt_initial, t_max, self._params, self.atol, self.rtol, self.max_step
+            self._f, self._y0, dt_initial,
+            t_eval, self._params, self.atol, self.rtol, self.max_step
         )
         return self._t, self._y
 

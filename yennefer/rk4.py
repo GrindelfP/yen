@@ -26,36 +26,31 @@ def _rk4_step(
 
 
 @njit
-def _rk4_integrate(
-    f: F,
-    y0: NDArray[np.float64],
-    dt: float,
-    t_max: float,
-    params: NDArray[np.float64],
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    n_steps = int(t_max / dt) + 2
-    n_vars  = y0.shape[0]
-    t_arr = np.empty(n_steps, dtype=np.float64)
-    y_arr = np.empty((n_steps, n_vars), dtype=np.float64)
-    t_arr[0] = 0.0
-    y_arr[0] = y0
+def _rk4_integrate(f, y0, t_eval, params):
+    n_vars = y0.shape[0]
+    n_out = t_eval.shape[0]
 
-    idx = 1
-    t   = 0.0
-    y   = y0
+    y_out = np.empty((n_out, n_vars), dtype=np.float64)
+    y_out[0] = y0
 
-    while t < t_max:
-        h = dt
-        if t + h > t_max:                    # last step
-            h = t_max - t
-        y = _rk4_step(f, t, y, h, params)
-        t = t + h
+    t = t_eval[0]
+    y = y0.copy()
 
-        t_arr[idx] = t
-        y_arr[idx] = y
-        idx += 1
+    eval_idx = 1
 
-    return t_arr[:idx], y_arr[:idx]
+    while eval_idx < n_out:
+        t_next_eval = t_eval[eval_idx]
+        h = t_next_eval - t
+
+        y_next = _rk4_step(f, t, y, h, params)
+
+        y_out[eval_idx] = y_next
+
+        t = t_next_eval
+        y = y_next
+        eval_idx += 1
+
+    return t_eval, y_out
 
 
 class RK4Solver:
@@ -83,19 +78,20 @@ class RK4Solver:
         self._t: NDArray[np.float64] | None = None
         self._y: NDArray[np.float64] | None = None
 
-    def solve(self, t_max: float, dt: float) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-        """Run the integration from ``t = 0`` to ``t_max``.
-
-        Returns
-        -------
-        t : NDArray[float64], shape (N,)
-            Time grid.
-        y : NDArray[float64], shape (N, n_vars)
-            Solution at each time point.
-        """
-        self._t, self._y = _rk4_integrate(
-            self._f, self._y0, dt, t_max, self._params
-        )
+    def solve(
+            self,
+            t_max: float | None = None,
+            dt: float | None = None,
+            t_min: float | None = 0.0,
+            t_eval: NDArray[np.float64] | None = None,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        if t_eval is None and t_min is not None and t_max is not None and dt is not None:
+            n_steps = round((t_max - t_min) / dt)
+            t_eval = np.linspace(t_min, t_max, n_steps + 1)
+        elif t_eval is None and t_min is None and t_max is None and dt is None:
+            raise AttributeError("Either provide t_min, t_max, t_step or time space t_eval!")
+        t_eval = np.asarray(t_eval, dtype=np.float64)
+        self._t, self._y = _rk4_integrate(self._f, self._y0, t_eval, self._params)
         return self._t, self._y
 
     @property
